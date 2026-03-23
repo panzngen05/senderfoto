@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kirim Foto Real-Time</title>
+    <!-- Socket.io Client -->
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --bg: #f3f4f6;
+            --surface: #ffffff;
+            --text: #1f2937;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg); color: var(--text); padding: 20px; display: flex; justify-content: center; }
+        
+        .container { max-width: 800px; width: 100%; display: flex; flex-direction: column; gap: 20px; }
+        .card { background: var(--surface); padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        
+        /* Typography & Elements */
+        h1, h2 { margin-bottom: 15px; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 6px; }
+        button { background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; }
+        button:hover { opacity: 0.9; }
+        button:disabled { background: #9ca3af; cursor: not-allowed; }
+        
+        /* Dashboard Layout */
+        #dashboard { display: none; grid-template-columns: 1fr 2fr; gap: 20px; }
+        @media (max-width: 600px) { #dashboard { grid-template-columns: 1fr; } }
+        
+        /* User List */
+        .user-list { list-style: none; }
+        .user-item { padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: 0.2s; }
+        .user-item:hover { background: #f9fafb; }
+        .user-item.selected { background: #e0e7ff; border-color: var(--primary); font-weight: bold; }
+        .user-item.self { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+        
+        /* Preview Area */
+        .preview-area { margin-top: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .message-box { padding: 15px; border-radius: 8px; border-left: 4px solid var(--primary); background: #f9fafb; animation: fadeIn 0.3s ease-in-out; }
+        .message-box img { max-width: 100%; border-radius: 6px; margin-top: 10px; box-shadow: 0 2px 4px rgb(0 0 0 / 0.1); }
+        .sender-name { font-weight: bold; color: var(--primary); }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        #alertBox { display: none; padding: 10px; margin-bottom: 15px; border-radius: 6px; background: #fee2e2; color: #991b1b; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div id="alertBox"></div>
+
+    <!-- Screen 1: Login -->
+    <div class="card" id="loginScreen">
+        <h1>Masuk ke Sistem</h1>
+        <p style="margin-bottom: 15px; color: #6b7280;">Masukkan username unik untuk mulai mengirim foto.</p>
+        <form id="loginForm">
+            <input type="text" id="usernameInput" placeholder="Contoh: Budi_Gamer" required autocomplete="off">
+            <button type="submit">Masuk</button>
+        </form>
+    </div>
+
+    <!-- Screen 2: Dashboard -->
+    <div id="dashboard">
+        <!-- Panel Kiri: Daftar User -->
+        <div class="card">
+            <h2>User Online 🟢</h2>
+            <ul id="userList" class="user-list">
+                <!-- User list dirender disini -->
+            </ul>
+        </div>
+
+        <!-- Panel Kanan: Kirim & Terima Foto -->
+        <div class="card">
+            <h2>Kirim Foto</h2>
+            <p style="margin-bottom: 15px; color: #6b7280; font-size: 0.9em;">Pilih user di samping, lalu pilih foto (JPG/PNG/WEBP, Max 5MB).</p>
+            
+            <form id="uploadForm">
+                <input type="file" id="fileInput" accept="image/jpeg, image/png, image/webp" required>
+                <button type="submit" id="sendBtn" disabled>Kirim Foto</button>
+            </form>
+
+            <h2 style="margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">Kotak Masuk 📥</h2>
+            <div id="previewArea" class="preview-area">
+                <p style="color: #9ca3af; font-style: italic;" id="emptyInbox">Belum ada foto yang diterima.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+    
+    // State
+    let myUsername = '';
+    let selectedTarget = '';
+
+    // Elements
+    const loginScreen = document.getElementById('loginScreen');
+    const dashboard = document.getElementById('dashboard');
+    const loginForm = document.getElementById('loginForm');
+    const usernameInput = document.getElementById('usernameInput');
+    const userListEl = document.getElementById('userList');
+    const uploadForm = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const previewArea = document.getElementById('previewArea');
+    const emptyInbox = document.getElementById('emptyInbox');
+    const alertBox = document.getElementById('alertBox');
+
+    // Utility: Tampilkan Alert
+    function showAlert(msg, isError = true) {
+        alertBox.textContent = msg;
+        alertBox.style.display = 'block';
+        alertBox.style.background = isError ? '#fee2e2' : '#dcfce7';
+        alertBox.style.color = isError ? '#991b1b' : '#166534';
+        setTimeout(() => alertBox.style.display = 'none', 5000);
+    }
+
+    // 1️⃣ Sistem Login
+    loginForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const username = usernameInput.value.trim();
+        if (!username) return;
+
+        socket.emit('login', username, (response) => {
+            if (response.success) {
+                myUsername = username;
+                loginScreen.style.display = 'none';
+                dashboard.style.display = 'grid';
+            } else {
+                showAlert(response.message);
+            }
+        });
+    });
+
+    // 2️⃣ Update Daftar User
+    socket.on('user_list', (users) => {
+        userListEl.innerHTML = '';
+        
+        // Reset target jika target disconnect
+        if (selectedTarget && !users.includes(selectedTarget)) {
+            selectedTarget = '';
+            updateSendButtonState();
+            showAlert('User yang kamu pilih telah offline.', true);
+        }
+
+        if (users.length <= 1) {
+            userListEl.innerHTML = '<li style="color: #9ca3af; font-size: 0.9em; padding: 10px;">Belum ada user lain...</li>';
+        }
+
+        users.forEach(u => {
+            const li = document.createElement('li');
+            li.className = 'user-item';
+            
+            if (u === myUsername) {
+                li.textContent = `${u} (Kamu)`;
+                li.classList.add('self');
+            } else {
+                li.textContent = u;
+                if (u === selectedTarget) li.classList.add('selected');
+                
+                li.onclick = () => {
+                    selectedTarget = u;
+                    // Update UI Selection
+                    document.querySelectorAll('.user-item').forEach(el => el.classList.remove('selected'));
+                    li.classList.add('selected');
+                    updateSendButtonState();
+                };
+            }
+            userListEl.appendChild(li);
+        });
+    });
+
+    function updateSendButtonState() {
+        if (selectedTarget && fileInput.files.length > 0) {
+            sendBtn.disabled = false;
+            sendBtn.textContent = `Kirim ke ${selectedTarget}`;
+        } else {
+            sendBtn.disabled = true;
+            sendBtn.textContent = "Pilih User & Foto Dulu";
+        }
+    }
+
+    fileInput.addEventListener('change', updateSendButtonState);
+
+    // 3️⃣ Sistem Upload (Kirim Foto)
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!selectedTarget) return showAlert('Pilih target user dulu!');
+        if (!fileInput.files[0]) return showAlert('Pilih foto dulu!');
+
+        const formData = new FormData();
+        formData.append('photo', fileInput.files[0]);
+        formData.append('targetUser', selectedTarget);
+        formData.append('socketId', socket.id); // Validasi pengirim di backend
+
+        sendBtn.disabled = true;
+        sendBtn.textContent = "Mengirim...";
+
+        try {
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            if (response.ok) {
+                showAlert('Berhasil mengirim foto!', false);
+                uploadForm.reset();
+                updateSendButtonState();
+            } else {
+                showAlert(result.error || 'Gagal mengirim foto.');
+            }
+        } catch (error) {
+            showAlert('Terjadi kesalahan jaringan.');
+        } finally {
+            updateSendButtonState(); // Reset button
+        }
+    });
+
+    // 4️⃣ Menerima Foto Real-Time
+    socket.on('receive_photo', (data) => {
+        emptyInbox.style.display = 'none';
+
+        const msgBox = document.createElement('div');
+        msgBox.className = 'message-box';
+        
+        msgBox.innerHTML = `
+            <div class="sender-name">Dari: ${data.from}</div>
+            <img src="${data.imageUrl}" alt="Foto dari ${data.from}">
+        `;
+
+        // Prepend (tambahkan ke paling atas)
+        previewArea.insertBefore(msgBox, previewArea.firstChild);
+    });
+</script>
+</body>
+</html>
